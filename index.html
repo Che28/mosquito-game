@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>今晚你跑不掉</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app">
+  <!-- 主標題畫面 -->
+  <div id="screen-title" class="screen active">
+    <div class="title-wrap">
+      <div class="title-buzz">~ bzzzzz ~</div>
+      <h1 class="title-main">今晚你跑不掉</h1>
+      <div class="title-sub">Tonight You Can't Escape</div>
+      <button id="btn-start" class="btn-big">開始遊戲</button>
+      <div class="title-hint">滑鼠揮擊 / 手指滑動 ── 別讓蚊子叮飽八個包</div>
+    </div>
+  </div>
+
+  <!-- 關卡選擇 -->
+  <div id="screen-levels" class="screen">
+    <h2>選擇關卡</h2>
+    <div class="level-grid">
+      <div class="level-card" data-level="1">
+        <div class="level-num">第一關</div>
+        <div class="level-name">教學關 ‧ 客廳</div>
+        <div class="level-desc">1 隻蚊子 ‧ 徒手</div>
+      </div>
+      <div class="level-card locked" data-level="2">
+        <div class="level-num">第二關</div>
+        <div class="level-name">臥室夜晚</div>
+        <div class="level-desc">1-2 隻 ‧ 解鎖打蚊拍</div>
+      </div>
+      <div class="level-card locked" data-level="3">
+        <div class="level-num">第三關</div>
+        <div class="level-name">夏日戶外</div>
+        <div class="level-desc">3 隻 ‧ 解鎖電蚊拍</div>
+      </div>
+      <div class="level-card locked" data-level="4">
+        <div class="level-num">Boss</div>
+        <div class="level-name">蚊王降臨</div>
+        <div class="level-desc">超大 Boss ‧ 全工具</div>
+      </div>
+    </div>
+    <button id="btn-back-title" class="btn-small">返回</button>
+  </div>
+
+  <!-- 工具選擇 -->
+  <div id="screen-tools" class="screen">
+    <h2>選擇你的武器</h2>
+    <div class="tool-grid">
+      <div class="tool-card" data-tool="hand">
+        <div class="tool-icon">🖐</div>
+        <div class="tool-name">徒手</div>
+        <div class="tool-desc">需貼近 ‧ 出手會遮視線<br/>蚊子警戒值高</div>
+      </div>
+      <div class="tool-card" data-tool="swatter">
+        <div class="tool-icon">🪰</div>
+        <div class="tool-name">打蚊拍</div>
+        <div class="tool-desc">中距離可揮 ‧ 長條判定<br/>需對準方向</div>
+      </div>
+      <div class="tool-card" data-tool="electric">
+        <div class="tool-icon">⚡</div>
+        <div class="tool-name">電蚊拍</div>
+        <div class="tool-desc">放置後須靜止<br/>蚊子撞上即死</div>
+      </div>
+    </div>
+    <div class="tool-actions">
+      <button id="btn-back-levels" class="btn-small">返回</button>
+      <button id="btn-start-level" class="btn-big" disabled>開始</button>
+    </div>
+  </div>
+
+  <!-- 遊戲畫面 -->
+  <div id="screen-game" class="screen">
+    <canvas id="game-canvas"></canvas>
+    <div id="hud">
+      <div class="hud-left">
+        <div id="bumps-count">包包：<span>0</span> / 8</div>
+        <div id="timer">時間：<span>--</span></div>
+      </div>
+      <div class="hud-right">
+        <div id="tool-indicator"></div>
+        <button id="btn-pause" class="btn-icon">⏸</button>
+      </div>
+    </div>
+    <div id="alert-meter">
+      <div class="alert-label">警戒</div>
+      <div class="alert-bar"><div class="alert-fill"></div></div>
+    </div>
+    <div id="tutorial-hint" class="hidden"></div>
+    <div id="freeze-overlay" class="hidden"></div>
+    <div id="blood-layer"></div>
+  </div>
+
+  <!-- 暫停 -->
+  <div id="screen-pause" class="screen overlay">
+    <div class="overlay-box">
+      <h2>暫停</h2>
+      <button id="btn-resume" class="btn-big">繼續</button>
+      <button id="btn-quit" class="btn-small">放棄關卡</button>
+    </div>
+  </div>
+
+  <!-- 勝利 -->
+  <div id="screen-win" class="screen overlay">
+    <div class="overlay-box">
+      <h2 class="win-title">勝利！</h2>
+      <div id="win-stats"></div>
+      <button id="btn-next" class="btn-big">下一關</button>
+      <button id="btn-replay" class="btn-small">重玩</button>
+      <button id="btn-menu" class="btn-small">回主選單</button>
+    </div>
+  </div>
+
+  <!-- 失敗 -->
+  <div id="screen-lose" class="screen overlay">
+    <div class="overlay-box">
+      <h2 class="lose-title">你被抓崩潰了</h2>
+      <div class="lose-desc">八個包包，蚊子贏了。</div>
+      <button id="btn-retry" class="btn-big">再來一次</button>
+      <button id="btn-menu2" class="btn-small">回主選單</button>
+    </div>
+  </div>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>

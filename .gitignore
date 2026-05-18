@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node (just in case)
+node_modules/
+npm-debug.log*
+
+# Logs
+*.log
