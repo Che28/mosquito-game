@@ -39,11 +39,26 @@ class SoundEngine {
     if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
   }
 
-  // 蚊子嗡嗡聲 — 真實蚊子是 600Hz 高頻細 whine，不是蜜蜂那種厚實 buzz
-  // 關鍵：基頻拉高、諧波少、AM 微弱緩慢、vibrato 為主、bandpass 銳利
+  // 嘗試載入真實蚊子音檔；失敗就 fallback 到合成
+  async loadMosquitoSample(url = 'sounds/mosquito.mp3') {
+    if (!this.ctx) this.init();
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('mosquito sample not found');
+      const arrayBuffer = await res.arrayBuffer();
+      this.mosquitoBuffer = await this.ctx.decodeAudioData(arrayBuffer);
+      console.log('[sound] Real mosquito sample loaded');
+    } catch (e) {
+      this.mosquitoBuffer = null;
+      console.log('[sound] No mosquito.mp3 found, using synthesized whine');
+    }
+  }
+
+  // 蚊子嗡嗡聲 — 若有 mosquito.mp3 用真實音檔，否則合成
   startBuzz(id, baseFreq = 620) {
     if (!this.ctx) return;
     this.stopBuzz(id);
+    if (this.mosquitoBuffer) return this.startBuzzSample(id, baseFreq);
 
     const t0 = this.ctx.currentTime;
 
@@ -129,6 +144,11 @@ class SoundEngine {
     const t = this.ctx.currentTime;
     n.gain.gain.linearRampToValueAtTime(volume, t + 0.08);
     n.panner.pan.linearRampToValueAtTime(clamp(pan, -1, 1), t + 0.12);
+    if (n.isSample) {
+      // 用音檔時調整 playbackRate 改變音調（不影響音色太多）
+      n.sample.playbackRate.linearRampToValueAtTime(freqMul, t + 0.12);
+      return;
+    }
     const f = n.baseFreq * freqMul;
     n.oscs[0].frequency.linearRampToValueAtTime(f, t + 0.12);
     n.oscs[1].frequency.linearRampToValueAtTime(f * 2, t + 0.12);
@@ -136,6 +156,25 @@ class SoundEngine {
     n.bp.frequency.linearRampToValueAtTime(f, t + 0.12);
     n.lfos[0].frequency.linearRampToValueAtTime(lfoRate, t + 0.1);
     n.vibDepth.gain.linearRampToValueAtTime(f * 0.018, t + 0.12);
+  }
+
+  // 用真實音檔的 buzz 啟動
+  startBuzzSample(id, baseFreq) {
+    const t0 = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.mosquitoBuffer;
+    src.loop = true;
+    // 每隻蚊子用 baseFreq / 620 當 playbackRate（小蚊子高音、大蚊子低音）
+    src.playbackRate.value = (baseFreq / 620);
+    src.detune.value = rand(-50, 50); // ±50 cents 微差異避免聽起來一模一樣
+    const gain = this.ctx.createGain();
+    gain.gain.value = 0;
+    const panner = this.ctx.createStereoPanner();
+    src.connect(gain).connect(panner).connect(this.master);
+    // 從隨機位置開始播放，避免多隻蚊子同步循環
+    const offset = rand(0, this.mosquitoBuffer.duration);
+    src.start(t0, offset);
+    this.buzzNodes.set(id, { sample: src, gain, panner, baseFreq, isSample: true });
   }
 
   stopBuzz(id) {
@@ -146,8 +185,12 @@ class SoundEngine {
     n.gain.gain.linearRampToValueAtTime(0, t + 0.05);
     setTimeout(() => {
       try {
-        n.oscs.forEach(o => o.stop());
-        n.lfos.forEach(o => o.stop());
+        if (n.isSample) {
+          n.sample.stop();
+        } else {
+          n.oscs.forEach(o => o.stop());
+          n.lfos.forEach(o => o.stop());
+        }
       } catch (e) {}
     }, 100);
     this.buzzNodes.delete(id);
@@ -390,7 +433,18 @@ class SoundEngine {
     const n = this.buzzNodes.get(id);
     if (!n) return;
     const t = this.ctx.currentTime;
-    // 所有諧波同步往上 1.8x
+    if (n.isSample) {
+      // 音檔：用 playbackRate 拉高音調 + 衰減
+      const currentRate = n.sample.playbackRate.value;
+      n.sample.playbackRate.cancelScheduledValues(t);
+      n.sample.playbackRate.linearRampToValueAtTime(currentRate * 1.8, t + 0.3);
+      n.gain.gain.cancelScheduledValues(t);
+      n.gain.gain.linearRampToValueAtTime(0.45, t + 0.05);
+      n.gain.gain.linearRampToValueAtTime(0, t + 0.6);
+      setTimeout(() => this.stopBuzz(id), 700);
+      return;
+    }
+    // 合成：所有諧波同步往上 1.8x
     n.oscs.forEach((o, i) => {
       const mul = i + 1;
       o.frequency.cancelScheduledValues(t);
@@ -688,6 +742,8 @@ class Mosquito {
     // 體型 (依被叮咬次數成長)
     this.scale = opts.scale || 0.6;
     this.targetScale = this.scale;
+    // 關卡層級的叮咬時長倍率
+    this.biteDurMul = opts.biteDurMul || 1.0;
 
     // 視覺
     this.facing = rand(0, TWO_PI);
@@ -724,7 +780,7 @@ class Mosquito {
     const character = ctx && ctx.character;
     if (!character || !character.biteSpots.length) return false;
     const spot = character.biteSpots[randInt(0, character.biteSpots.length - 1)];
-    this.bitingDuration = rand(1.5, 3.5) * (this.isBoss ? 0.45 : 1);
+    this.bitingDuration = rand(1.5, 3.5) * (this.isBoss ? 0.45 : 1) * this.biteDurMul;
     this.bitePosition = { x: spot.x, y: spot.y, type: 'bite' };
     this.targetX = spot.x;
     this.targetY = spot.y;
@@ -816,13 +872,13 @@ class Mosquito {
     this.speedMul = lerp(this.speedMul, targetSpeedMul, dt * 4);
     let speed = this.baseSpeed * this.speedMul;
 
-    // 電蚊拍：玩家移動時干擾路徑
-    if (tool && tool.kind === 'electric' && toolMoveSpeed > 100) {
+    // 電蚊拍：玩家「快速」移動時才干擾路徑（門檻更高、推力減半）
+    if (tool && tool.kind === 'electric' && toolMoveSpeed > 250) {
       const tdx = this.x - mouse.x;
       const tdy = this.y - mouse.y;
       const td = Math.hypot(tdx, tdy);
-      if (td < 220) {
-        const push = (1 - td / 220) * 200;
+      if (td < 160) {
+        const push = (1 - td / 160) * 100;
         this.x += (tdx / (td || 1)) * push * dt;
         this.y += (tdy / (td || 1)) * push * dt;
       }
@@ -912,6 +968,10 @@ class Mosquito {
     this.bitingTimer += dt;
 
     const isRest = this.bitePosition && this.bitePosition.type === 'rest';
+    // 取得關卡層級的警戒/飛走倍率
+    const levelCfg = game && LEVELS[game.level] ? LEVELS[game.level] : {};
+    const alertMul = levelCfg.alertMul || 1.0;
+    const randFleeMul = levelCfg.randFleeMul || 1.0;
 
     // 偶爾微微抖動翅膀
     if (this.bitingTimer > 1 && Math.random() < 0.005) {
@@ -933,15 +993,14 @@ class Mosquito {
 
     // 警戒系統（積極版：靜止靠近就會明顯累積）
     let alertGain = 0;
-    let alertDecay = 15;
+    let alertDecay = 15 / alertMul; // 警戒倍率影響衰減（低警戒關 = 衰減快）
     if (tool && mouse.x !== null && mouse.y !== null) {
       const d = dist(this.x, this.y, mouse.x, mouse.y);
       const proximityFactor = clamp(1 - d / 320, 0, 1);
-      // 靜止地板提高到 0.3：純靠體溫/氣息也會累積（蚊子真的會察覺）
       const speedFactor = Math.max(0.3, toolMoveSpeed / 380);
       const toolFactor = tool.alertGain;
       const restMul = isRest ? 1.2 : 1;
-      alertGain = proximityFactor * speedFactor * toolFactor * 280 * restMul;
+      alertGain = proximityFactor * speedFactor * toolFactor * 280 * restMul * alertMul;
     }
     this.alert += (alertGain - alertDecay) * dt;
     this.alert = clamp(this.alert, 0, 100);
@@ -956,8 +1015,8 @@ class Mosquito {
       return;
     }
 
-    // 隨機警覺：rest ~13%/s、bite ~11%/s
-    const randFlee = isRest ? 0.13 : 0.11;
+    // 隨機警覺：rest ~11%/s、bite ~9%/s（依關卡 randFleeMul 縮放）
+    const randFlee = (isRest ? 0.11 : 0.09) * randFleeMul;
     if (Math.random() < randFlee * dt) {
       this.flee('random');
       return;
@@ -1002,7 +1061,7 @@ class Mosquito {
       this.fleeTimer = 0;
       this.bitePosition = null;
       this.pickNewTarget(canvasW, canvasH);
-      sound.startBuzz(this.id, 620 / (0.7 + 0.3 * this.scale));
+      sound.startBuzz(this.id, (620 / (0.7 + 0.3 * this.scale)) * rand(0.88, 1.12));
     }
   }
 
@@ -1016,33 +1075,32 @@ class Mosquito {
     let prob = 0;
 
     if (tool.kind === 'hand') {
-      // 平衡：極近 62-72%, 近 26-34%, 中 9%, 遠 0%
-      if (d < baseRadius * 1.7) prob = rand(0.62, 0.72);
-      else if (d < baseRadius * 2.8) prob = rand(0.26, 0.34);
-      else if (d < baseRadius * 4.2) prob = 0.09;
+      // 再降難度：極近 75-85%, 近 38-46%, 中 15%, 遠 0%
+      if (d < baseRadius * 1.8) prob = rand(0.75, 0.85);
+      else if (d < baseRadius * 3.0) prob = rand(0.38, 0.46);
+      else if (d < baseRadius * 4.5) prob = 0.15;
       else prob = 0;
-      // 高速橫掃懲罰
-      if (toolSpeed > 450) {
-        const penalty = clamp(1 - (toolSpeed - 450) / 850, 0.18, 1);
+      if (toolSpeed > 550) {
+        const penalty = clamp(1 - (toolSpeed - 550) / 950, 0.30, 1);
         prob *= penalty;
       }
     } else if (tool.kind === 'swatter') {
-      // 平衡：極近 78-86%, 近 54-64%, 中 30-38%, 遠 12%
+      // 再降難度：極近 87-93%, 近 65-75%, 中 42-50%, 遠 18%
       let baseProb = 0;
-      if (d < baseRadius * 1.8) baseProb = rand(0.78, 0.86);
-      else if (d < baseRadius * 3.2) baseProb = rand(0.54, 0.64);
-      else if (d < baseRadius * 5.0) baseProb = rand(0.30, 0.38);
-      else if (d < baseRadius * 7.0) baseProb = 0.12;
+      if (d < baseRadius * 1.9) baseProb = rand(0.87, 0.93);
+      else if (d < baseRadius * 3.4) baseProb = rand(0.65, 0.75);
+      else if (d < baseRadius * 5.2) baseProb = rand(0.42, 0.50);
+      else if (d < baseRadius * 7.2) baseProb = 0.18;
       else baseProb = 0;
 
-      // 長條判定：揮擊方向需朝向蚊子
+      // 長條判定：揮擊方向需朝向蚊子（更寬容）
       if (swipeDir) {
         const swipeAng = Math.atan2(swipeDir.y, swipeDir.x);
         const toMosqAng = Math.atan2(this.y - mouseY, this.x - mouseX);
         let angDiff = Math.abs(swipeAng - toMosqAng);
         if (angDiff > Math.PI) angDiff = TWO_PI - angDiff;
-        // 偏離超過 55 度大幅降低
-        const dirFactor = clamp(1 - (angDiff / (Math.PI / 3.3)) * 0.75, 0.2, 1);
+        // 偏離超過 70 度才大幅降低，地板提高至 0.35
+        const dirFactor = clamp(1 - (angDiff / (Math.PI / 2.5)) * 0.6, 0.35, 1);
         baseProb *= dirFactor;
       }
       prob = baseProb;
@@ -1741,12 +1799,19 @@ const LEVELS = {
     floorColor: '#7a4a28',
     ambient: 'light',
     mosquitoCount: 1,
-    timeLimit: 90,
-    tools: ['hand'],
+    timeLimit: 120,
+    tools: ['hand', 'swatter', 'electric'],
+    // 教學關難度修正
+    speedMul: 0.75,       // 蚊子飛得更慢
+    biteDurMul: 1.25,     // 停留時間延長 25%
+    alertMul: 0.7,        // 警戒累積更慢
+    randFleeMul: 0.5,     // 隨機飛走機率減半
     tutorialHints: [
-      { time: 0, text: '聽聲音！蚊子的嗡嗡聲會告訴你牠在哪裡。' },
-      { time: 4, text: '等蚊子停下來叮咬時，才能打中。慢慢靠近、別嚇跑牠！' },
-      { time: 12, text: '徒手要靠很近 ── 注意警戒條，太快靠近會被發現。' }
+      { time: 0, text: '🔊 戴耳機聽蚊子方向 ── 等蚊子「停下」才打得到' },
+      { time: 5, text: '🖐 徒手：靠近蚊子 → 快速向下點擊' },
+      { time: 13, text: '🪰 打蚊拍：朝蚊子「快速滑動游標」→ 點擊' },
+      { time: 22, text: '⚡ 電蚊拍：點下放置 → 游標靜止 → 等蚊子撞上來' },
+      { time: 32, text: '右上「警戒」條 ── 太快靠近會嚇跑蚊子' }
     ]
   },
   2: {
@@ -1754,11 +1819,15 @@ const LEVELS = {
     bgGradient: ['#1a1a3a', '#0a0a20', '#000010'],
     floorColor: '#1a1228',
     ambient: 'dark',
-    mosquitoCount: 2,
-    timeLimit: 105,
-    tools: ['hand', 'swatter'],
+    mosquitoCount: 5,
+    timeLimit: 140,
+    tools: ['hand', 'swatter', 'electric'],
+    speedMul: 1.0,
+    biteDurMul: 1.0,
+    alertMul: 1.0,
+    randFleeMul: 1.0,
     tutorialHints: [
-      { time: 0, text: '視線受限 ── 用耳機戴聽，左右聲道告訴你蚊子方向。' }
+      { time: 0, text: '🌙 暗房 5 隻 ── 全靠耳機聽方向' }
     ]
   },
   3: {
@@ -1766,11 +1835,15 @@ const LEVELS = {
     bgGradient: ['#7ed4f0', '#a8e8a0', '#6ec068'],
     floorColor: '#4a8038',
     ambient: 'light',
-    mosquitoCount: 3,
-    timeLimit: 120,
+    mosquitoCount: 10,
+    timeLimit: 180,
     tools: ['hand', 'swatter', 'electric'],
+    speedMul: 1.05,
+    biteDurMul: 0.95,
+    alertMul: 0.9,
+    randFleeMul: 0.9,
     tutorialHints: [
-      { time: 0, text: '三隻同時來！決定先打哪一隻。' }
+      { time: 0, text: '☀️ 蚊群暴擊！打掉一隻聲音就少一層' }
     ]
   },
   4: {
@@ -1782,8 +1855,15 @@ const LEVELS = {
     timeLimit: 120,
     boss: true,
     tools: ['hand', 'swatter', 'electric'],
+    speedMul: 1.0,        // Boss 速度已內建 1.6x，不再加倍
+    biteDurMul: 1.0,
+    alertMul: 1.1,        // Boss 警覺度更高
+    randFleeMul: 1.1,
     tutorialHints: [
-      { time: 0, text: '蚊王速度極快，停留時間極短 ── 把握每一次出手！' }
+      { time: 0, text: '👹 蚊王降臨！速度極快、停留極短' },
+      { time: 5, text: '⚡ 電蚊拍最有效 ── 攔截牠的飛行路徑' },
+      { time: 15, text: '🪰 拍子備用 ── 蚊王停下的瞬間立刻揮' },
+      { time: 30, text: '🩸 每次牠咬到你會變更大、更慢、更好打 ── 但 8 包就輸了' }
     ]
   }
 };
@@ -1804,7 +1884,7 @@ class Game {
     this.tool = null;
     this.timeLeft = 0;
     this.elapsed = 0;
-    this.unlocked = { 1: true, 2: false, 3: false, 4: false };
+    this.unlocked = { 1: true, 2: true, 3: true, 4: true };
 
     // 場上實體
     this.mosquitoes = [];
@@ -1854,11 +1934,7 @@ class Game {
     this.lastFrame = performance.now();
     requestAnimationFrame((t) => this.loop(t));
 
-    // 從 localStorage 讀取解鎖狀態
-    try {
-      const saved = JSON.parse(localStorage.getItem('mosquito-unlocked') || '{}');
-      Object.assign(this.unlocked, saved);
-    } catch (e) {}
+    // 全部關卡開放（不再需要解鎖進度）
     this.refreshLevelLocks();
   }
 
@@ -1960,6 +2036,14 @@ class Game {
     }, { passive: false });
   }
 
+  // 載入真實蚊子音檔（在第一次用戶互動後嘗試）
+  tryLoadMosquitoSample() {
+    if (this._sampleLoadAttempted) return;
+    this._sampleLoadAttempted = true;
+    sound.init();
+    sound.loadMosquitoSample('sounds/mosquito.mp3');
+  }
+
   handlePointerMove(x, y) {
     const rect = this.canvas.getBoundingClientRect();
     const px = x - rect.left;
@@ -1991,10 +2075,10 @@ class Game {
     this.lastMoveTime = now;
   }
 
-  // 計算最近 ~150ms 的滑動方向 & 速度
+  // 計算最近 ~180ms 的滑動方向 & 速度
   computeSwipe() {
     const now = performance.now();
-    const recent = this.swipeHistory.filter(s => now - s.t < 150);
+    const recent = this.swipeHistory.filter(s => now - s.t < 180);
     if (recent.length < 2) return null;
     const first = recent[0];
     const last = recent[recent.length - 1];
@@ -2003,7 +2087,7 @@ class Game {
     const dx = last.x - first.x;
     const dy = last.y - first.y;
     const speed = Math.hypot(dx, dy) / dt;
-    if (speed < 200) return null; // 揮擊速度不足
+    if (speed < 140) return null; // 揮擊速度門檻：200 → 140，更寬容
     return { x: dx, y: dy, speed };
   }
 
@@ -2256,17 +2340,21 @@ class Game {
     this.character = new Character(this.W, this.H);
     this.restSpots = this.computeRestSpots();
 
+    // 套用 per-level 平衡參數
+    const speedMul = cfg.speedMul || 1.0;
+    const biteDurMul = cfg.biteDurMul || 1.0;
     for (let i = 0; i < cfg.mosquitoCount; i++) {
       const m = new Mosquito(rand(50, this.W - 50), rand(30, this.H * 0.4), {
         isBoss: cfg.boss,
         scale: cfg.boss ? 1.0 : 0.6,
-        baseSpeed: cfg.boss ? 260 : (200 - i * 10)
+        baseSpeed: (cfg.boss ? 260 : (200 - i * 10)) * speedMul,
+        biteDurMul: biteDurMul
       });
       m.pickNewTarget(this.W, this.H);
       this.mosquitoes.push(m);
       sound.init();
       sound.resume();
-      sound.startBuzz(m.id, 620 / (0.7 + 0.3 * m.scale));
+      sound.startBuzz(m.id, (620 / (0.7 + 0.3 * m.scale)) * rand(0.88, 1.12));
     }
 
     this.state = 'playing';
@@ -2335,6 +2423,7 @@ class Game {
     document.getElementById('btn-start').addEventListener('click', () => {
       sound.init();
       sound.resume();
+      this.tryLoadMosquitoSample();
       this.showScreen('screen-levels');
     });
     document.getElementById('btn-back-title').addEventListener('click', () => this.showScreen('screen-title'));
@@ -2435,7 +2524,7 @@ class Game {
     this.hideOverlay('screen-pause');
     // 重啟 buzz
     for (const m of this.mosquitoes) {
-      sound.startBuzz(m.id, 620 / (0.7 + 0.3 * m.scale));
+      sound.startBuzz(m.id, (620 / (0.7 + 0.3 * m.scale)) * rand(0.88, 1.12));
     }
   }
 
@@ -2512,20 +2601,19 @@ class Game {
     // 電蚊拍：碰觸蚊子即命中
     if (this.tool && this.tool.kind === 'electric' && this.electricPlaced) {
       // 玩家若移動，電蚊拍位置跟隨；靜止時保持
-      const movedRecently = performance.now() - this.lastMoveTime < 200;
+      const movedRecently = performance.now() - this.lastMoveTime < 80; // 200 → 80ms，更快通電
       if (this.mouse.x !== null) {
         this.electricPlaced.x = this.mouse.x;
         this.electricPlaced.y = this.mouse.y;
       }
       if (!movedRecently) {
-        // 靜止時偵測碰撞
+        // 靜止時偵測碰撞（任何狀態都能打）
         for (const m of this.mosquitoes) {
-          if (m.state === 'flying' || m.state === 'landing') {
-            const d = dist(m.x, m.y, this.electricPlaced.x, this.electricPlaced.y);
-            if (d < 40 + 25 * m.scale) {
-              this.killMosquito(m);
-              break;
-            }
+          const d = dist(m.x, m.y, this.electricPlaced.x, this.electricPlaced.y);
+          // 半徑放大：65 + 35×scale，scale 0.6 → 86px（從 55 → 86）
+          if (d < 65 + 35 * m.scale) {
+            this.killMosquito(m);
+            break;
           }
         }
       }
@@ -3150,6 +3238,28 @@ class Game {
     const ctx = this.ctx;
     ctx.save();
     ctx.translate(x, y);
+
+    // 通電有效範圍（半透明電場圈）
+    if (active) {
+      const pulse = 0.5 + Math.sin(performance.now() / 100) * 0.2;
+      const r = 95; // ≈ 65 + 35×scale(0.85 avg)，視覺範圍
+      const rangeGrad = ctx.createRadialGradient(0, 0, 30, 0, 0, r);
+      rangeGrad.addColorStop(0, `rgba(120,220,255,${0.18 * pulse})`);
+      rangeGrad.addColorStop(0.6, `rgba(120,220,255,${0.08 * pulse})`);
+      rangeGrad.addColorStop(1, 'rgba(120,220,255,0)');
+      ctx.fillStyle = rangeGrad;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, TWO_PI);
+      ctx.fill();
+      // 範圍外環（虛線）
+      ctx.strokeStyle = `rgba(180,240,255,${0.45 * pulse})`;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, TWO_PI);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
 
     // 拍面
     ctx.fillStyle = 'rgba(80,200,255,0.15)';
